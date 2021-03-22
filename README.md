@@ -1,0 +1,1 @@
+The `ads_workflow.R` file has all the necessary steps to calculate the perentage of insect and disease affecting sub-watersheds (HUC12) from 2001-2019. There are some files read-in from the T:drive from this project link `T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/`. 
