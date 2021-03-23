@@ -1,11 +1,12 @@
 library(sf)
 library(raster)
 library(tidyverse)
+library(patchwork)
+library(exactextractr)
 
 #bring in ads
 ads <- raster('T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/Workspace/jfortier/ADS_2000_2020_SeverityWeightedAcres.tif')
 
-library(exactextractr)
 
 #bring in hucs
 
@@ -43,13 +44,13 @@ d1 <- dist_ads %>% ggplot(aes(percentiles, value)) + geom_line() +
 library(plotly)
 ggplotly(d1)
 #exploring hazard ratings
-hucs_haz <- hucs %>% select(ads_sum, tree_acres, ads_percent)
+hucs_haz <- hucs
 hazard <- raster('T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/Workspace/jfortier/Regional_InsectHazard_SUM.tif')
 # Values 67, 133 or 201 == moderate, 100,167, 200, 234 and 367 == high
 hazard_rc <- raster::reclassify(hazard, c(0,1,0, 1, Inf, 1))
 hazard_high <- raster::reclassify(hazard, c(0, 67, 0, 67,100,1,100, 133, 0, 133, 200, 1, 200,201, 0, 201, 255, 1))
 hazard_mod <- raster::reclassify(hazard, c(0, 67, 1, 67,100,0,100, 133, 1, 133, 200, 0, 200,201, 1, 201, 255, 0))
-
+plot(hazard)
 
 plot(hazard_mod)
 plot(hazard_high)
@@ -82,17 +83,21 @@ high <- hucs_haz_df %>% ggplot(aes(haz_per_high)) + geom_histogram() +
 mod <- hucs_haz_df %>% ggplot(aes(haz_per_mod)) + geom_histogram() +
   theme_bw() + labs(x = 'Moderate Hazard Percentage per HUC12', title = 'Moderate Severity')
 
-library(patchwork)
+#plot together
 all / (high|mod)
 
 
+#now bring it all back together
+
+hucs_ts <- hucs %>% select(HUC_12, Shape) %>%
+  left_join(hucs_haz_df, by = 'HUC_12') %>%
+  select(-c('sum_forest_loss','percent_loss','class')) %>%
+  st_as_sf() %>%
+  rename(geometry = 'Shape')
+
+path <- 'T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/Data/Josh/josh_wcc.gdb'
+
+#now write to esri gdb
+arc.write(paste0(path, '/ads_hucs'), data = hucs_ts,validate = TRUE, overwrite = TRUE)
 
 
-# yo bro ------------------------------------------------------------------
-
-trace(grDevices::png, quote({
-  if (missing(type) && missing(antialias)) {
-    type <- "cairo-png"
-    antialias <- "subpixel"
-  }
-}), print = FALSE)
