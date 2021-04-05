@@ -1,0 +1,195 @@
+---
+title: "Watershed Condition Class: Forest Health Analysis."
+author: "Josh Erickson"
+date: "2/17/2021"
+output:
+  prettydoc::html_pretty:
+    theme: cayman
+    highlight: github
+---
+
+```{r setup, include=FALSE}
+library(rgee)
+ee_Initialize(email = "joshualerickson@gmail.com", gcs = TRUE)
+library(sf)
+library(stars)
+library(raster)
+library(tidyverse)
+library(AOI)
+library(prettydoc)
+library(patchwork)
+library(mapview)
+library(scales)
+library(exactextractr)
+library(arcgisbinding)
+arc.check_product()
+resourceviz::light_and_cairo()
+hucs <- read_sf('images/fh.gpkg', layer = 'fh')
+hucs_df <- hucs %>% st_drop_geometry()
+```
+
+# Introduction  
+
+Below is a workflow used to create a *forest health* rating for the Watershed Condition Class (WCC) analysis in USDA-USFS Region 1. The code is housed on github at this [<b>link</b>](https://github.com/joshualerickson/insects_and_disease) if you wanted the scripts via file. The rest of the report will be mostly code and workflow, so you have been warned.
+
+
+# Workflow
+
+Libraries we'll use.
+```{r, eval = F}
+library(rgee)
+ee_Initialize(email = "joshualerickson@gmail.com", gcs = TRUE)
+library(sf)
+library(stars)
+library(raster)
+library(tidyverse)
+library(AOI)
+library(prettydoc)
+library(patchwork)
+library(mapview)
+library(scales)
+library(arcgisbinding)
+arc.check_product()
+```
+
+Most of the heavy lifting was done by Joe Fortier (R1 remote sensing analyst) by dissecting the ADS database and getting these products rasterized. The data was gathered from Region 1 aerial detection survey's (ADS) via post-processed weighted-area calculations. What this means is that some geometries are relatively large but the **actual** impact might not be; thus, a correction factor was applied by the domain experts prior to analysis. Joe then rasterized these correction factors so that we could then extract by HUC 12 from which we'd have an *area* representation of historic ADS 20-year mortality, e.g. insect and disease. This is the workflow from that point on. So first we'll bring in the rasterized ADS data which is severity weighted acres from 2000-2020.
+
+```{r, eval = F}
+#bring in ads
+ads <- raster('T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/Workspace/jfortier/ADS_2000_2020_SeverityWeightedAcres.tif')
+
+
+```
+
+We decided to use the masked out fire perimeter HUC 12s so that we were only comparing living tree acres to potentially affected tree acres so we'll bring in forest cover loss layer because that has fire masked out and also has tree acres.
+
+```{r, eval=F}
+# only USFS land and Fire Perimeters filtered out
+
+hucs <- read_sf('T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/Data/Josh/josh_wcc.gdb', layer = 'forest_cover_analysis')
+
+```
+
+Now extract the affected areas from the HUC 12s.
+
+```{r, message=F, error=F, warning=F, eval=F}
+
+hucs$ads_sum <- exact_extract(ads, hucs, 'sum')
+
+#convert to tree acres and calculate a percentage
+hucs <- hucs %>% mutate(tree_acres = (sum_tree_cov*900)/4046.86,
+                            ads_fraction = ads_sum/tree_acres) %>% 
+  select(-cover_loss_fraction,-class_forest_cover, -sum_forest_loss, -sum_tree_cov)
+
+hucs_df <- hucs %>% st_drop_geometry()
+```
+
+Now we can start to visualise the distribution across the region graphically.
+
+```{r}
+#visualising
+
+dist_ads <- tibble(value = quantile(hucs_df$ads_fraction, seq(0,1,.05), na.rm = T),
+       percentiles = seq(0,1,0.05))
+
+dist_ads %>% ggplot(aes(percentiles, value)) + geom_line() +
+  labs(y = 'Percentage Affected', title = 'Percentage of a HUC 12 affected by Insects and Disease', subtitle = 'Compared with percentiles') +
+  scale_y_continuous(labels = scales::percent, breaks = seq(0, 1, 0.1)) +
+  scale_x_continuous(labels = scales::percent, breaks = seq(0, 1, 0.1)) +
+  theme_bw() + geom_hline(yintercept = .3, linetype = 3) + ggforce::geom_mark_hull(aes(.95,.3, description = 'This intersection shows that 95% of the HUC 12s are below a 30% affected value' ))
+```
+
+From here, we start to partition the dataset into classes based on information and suggestions made from Joel Egan. Here's an email exerpt where Joel lines out what he would recommend for these partitions.
+
+"
+ADS mortality data was recently validated to be appropriate when using broad severity categories:  low (>10%), moderate (10-30%), and high (>30%).  Looks very close to WCA’s 25% mortality rate to trigger ‘impact’.
+
+Note also, FHP has assessment of subwatershed susceptible host abundance conditions that led to severe mountain pine beetle (MPB) outbreaks from 1999-2015.  Basically, >25% of total subwatershed area (not forested area) being highly susceptible to MPBs has high probability of severe outbreak during next drought cycle trigger. We have predictive model for acres as well as a percent metric. 
+
+I’d suggest something along these lines:  
+
+Functioning (limited ADS historic 20-year mortality and limited area within moderate/high susceptibility classes for DFB/MPB/FEN, which are the primary R1 bark beetles most-active since 1962).  Risk can be based on abundance of susceptible host in subwatershed (MPB example above). 
+
+Functioning at risk (limited historic ADS 20-year mortality and high risk of either DFB/MPB/FEN)
+
+Not functioning (severe historic ADS 20-year mortality)"
+
+-- Joel Egan, Mon 3/8/2021 6:38 PM
+
+Based on this dialogue with Joel, we partitioned the dataset into 'not functioning' by anything greater or equal to 30% affected from the original ADS data aka 'severe historic ADS 20-year mortality', see graph above. This left us with the rest of the dataset from which we broke into two different classes depending on the risk of DFB/MPB per HUC 12. Joe Fortier had previously done work in this domain and had a 90m resolution raster of DFB/MPB hazard indexes. Thus, we extracted these into each HUC 12.
+
+```{r, message=F, error=F, warning=F, eval=F}
+hazard <- raster('T:/FS/NFS/R01/Program/7140Geometronics/GIS/Project/zz_R1WCC_Jan2021/Workspace/jfortier/Regional_InsectHazard_SUM.tif')
+# Values 67, 133 or 201 == moderate, 100,167, 200, 234 and 367 == high
+
+#normal reclass
+hazard_rc <- raster::reclassify(hazard, c(0,1,0, 1, Inf, 1))
+
+# now reclass with high
+hazard_high <- raster::reclassify(hazard, c(0, 67, 0, 67,100,1,100, 133, 0, 133, 200, 1, 200,201, 0, 201, 255, 1))
+
+#now reclass with mod
+hazard_mod <- raster::reclassify(hazard, c(0, 67, 1, 67,100,0,100, 133, 1, 133, 200, 0, 200,201, 1, 201, 255, 0))
+
+# now extract from the reclassified rasters into hucs_haz which is essentially hucs...
+hucs$haz_sum_high <- exact_extract(hazard_high, hucs, 'sum')
+hucs$haz_sum_mod <- exact_extract(hazard_mod, hucs, 'sum')
+hucs$haz_sum <- exact_extract(hazard_rc, hucs, 'sum')
+
+```
+
+From this, we then looked at the distributions of the hazard data to see if there was any breakpoints that were noticeable or where we might try and split the data. However, Joel had mentioned something along these lines, 
+
+"Similarly, our Northern Region data predicts that a severe MPB outbreak is likelyduring the next substantial drought period when 26-40% of the total subwatershed area is highly susceptible to MPB-attack and is extremely likely when that area exceeds 40%. (Egan et al.–unpublished)."
+
+```{r}
+hucs <-  hucs %>% mutate(haz_acres = (haz_sum*32400)/4046.86,
+                                       haz_fraction = haz_acres/tree_acres,
+                                       haz_mod_acres = (haz_sum_mod*32400)/4046.86,
+                                       haz_high_acres = (haz_sum_high*32400)/4046.86,
+                                       haz_fraction_high = haz_high_acres/tree_acres,
+                                       haz_fraction_mod = haz_mod_acres/tree_acres)
+
+#create data.frame to do stuff
+hucs_haz_df <- hucs %>% st_drop_geometry()
+```
+
+Now we can visualize these distributions.
+
+```{r, echo = F, message=F, error=F, warning=F}
+
+#plotting hazards
+
+
+high <- hucs_haz_df %>% ggplot(aes(haz_fraction_high)) + geom_density(fill = 'blue') + 
+  theme_bw() + labs(x = 'High Hazard Fraction per HUC12', title = 'High Severity')
+
+
+mod <- hucs_haz_df %>% ggplot(aes(haz_fraction_mod)) + geom_density(fill = 'blue') + 
+  theme_bw() + labs(x = 'Moderate Hazard Fraction per HUC12', title = 'Moderate Severity')
+
+#plot together
+high|mod
+```
+
+The next step was to split the remaining data into either class '1' or '2' and we decided to use the 40% 'highly susceptible to MPB-attack' as the threshold to split instead of the 26% as this was the higher end of Joel's comment and would most likely be the most conservative. In addition, we also added a graph of what it would look like compared to the original method of ADS mortality data, e.g. low (>10%), moderate (10-30%), and high (>30%).
+
+```{r, echo=F}
+hucs <- hucs %>% mutate(class_forest_health = ifelse(ads_fraction >= 0.30, '3',
+                                                           ifelse(haz_fraction_high < 0.40, '1', '2')),
+                                            ADS_method = ifelse(ads_fraction >= 0.30, '3',
+                                                                       ifelse(ads_fraction < 0.10, '1', '2')))
+
+hucs %>% st_drop_geometry() %>% filter(!is.na(ads_fraction)) %>% 
+  pivot_longer(c('class_forest_health', 'ADS_method')) %>%
+  ggplot() + geom_bar(aes(name)) + facet_wrap(~value) + labs(title = 'Bar plot showing difference in count between ADS method and Susceptibility method')
+```
+
+From this we can that the ADS method has more in class '1' than the Susceptibility method. We decided to go with this method (Susceptibility) because it was recommended by Joel and captures what might be expected given droughty conditions in the future. Below is the final map.
+
+```{r, echo = F, message=F, warning=F}
+m1 <- mapview(hucs, zcol = 'class_forest_health', col.regions = c('green', 'yellow', 'red'))
+
+m1@map
+```
+
